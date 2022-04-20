@@ -169,8 +169,8 @@ class CalibratorNode( object ):
             opt.compute_weights( data, result.x )
             result = opt.optimize( data, initial_guess, self.odom_list )
         self.initial_guess = result.x
-        self.republisher.update_tf( result.x )
-        #print( result )
+        self.republisher.update_tf( [ 0.985, -0.750, result.x[2], -0.985, 0.750, result.x[5] ] )
+        print("Calibrated angles: ", result.x[2], result.x[5] - pi )
         return result
     
     def create_data( self ):
