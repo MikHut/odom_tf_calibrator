@@ -1,7 +1,25 @@
 <launch>
-	<!-- This is an example launch file for the Thorvald mobile robot platform. this launch file starts the calibration node and the static tf publisher. -->
+
+    <arg name="robot_no" default="053"/>
+	<arg name="robot_config_file" default="$(find thorvald_uv_bringup)/config/robots/robot_$(arg robot_no)/robot.yaml" />
+	<arg name="update_robot_config" default="True" />
+
+	<!-- Optimiser params -->
+	<arg name="num_opt_iterations" default="4" />
+	<arg name="num_opt_step_size" default="20" />
+	<arg name="max_opt_keyframes" default="120" />
+
+
+	<include file="$(find lrf_odom)/launch/lrf_odom_thorvald.launch">
+	</include>
 
 	<!-- the calibration node. default parameters work with standard thorvald platform. -->
-	<node pkg="odom_tf_calibrator" type="odom_calibrate_2d.py" name="lrf_calibrator" />
+	<node pkg="odom_tf_calibrator" type="odom_calibrate_2d.py" name="lrf_calibrator" output="screen" required="true">
+	  <param name="robot_config_file" value="$(arg robot_config_file)" />
+	  <param name="update_robot_config" value="$(arg update_robot_config)" />
+	  <param name="num_opt_iterations" value="$(arg num_opt_iterations)" />
+	  <param name="num_opt_step_size" value="$(arg num_opt_step_size)" />
+	  <param name="max_opt_keyframes" value="$(arg max_opt_keyframes)" />
+	</node>
 
 </launch>

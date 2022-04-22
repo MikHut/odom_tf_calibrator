@@ -1,9 +1,9 @@
 from distutils.core import setup
 from catkin_pkg.python_setup import generate_distutils_setup
 
-setup_args = generate_distutils_setup(
-    packages=[ 'odom_tf_calibrator' ],
+d = generate_distutils_setup(
+    packages=['odom_tf_calibrator'],
     package_dir={'': 'src'}
 )
 
-setup(**setup_args)
+setup(**d)
