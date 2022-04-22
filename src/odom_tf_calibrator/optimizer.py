@@ -154,7 +154,7 @@ class Optimizer( object ):
         initial_guess is a flat array of transformation parameters for each sensor (x,y,t).
         topics is a list of odom topic names to indicate the order in which data is to be read to match initial_guess """
         self.topics = topics
-        result = minimize( fun=self.fun, x0=initial_guess, args=(data) )
+        result = minimize( fun=self.fun, x0=initial_guess, args=(data), method='SLSQP' )
         #print( 'result={}'.format( result ) )
         self.print_result( data, initial_guess, topics, result )
         #self.log_error( data, result )
