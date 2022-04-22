@@ -13,8 +13,12 @@ from odom_tf_calibrator.optimizer import Optimizer
 from odom_tf_calibrator.republisher import Republisher
 from odom_tf_calibrator.datapoint import DataPoint
 
+from rasberry_core.update_robot_config_yaml import RobotConfig
+
 import rospy
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
+import tf, tf2_ros
 from tf.transformations import euler_from_quaternion
 
 
@@ -49,29 +53,81 @@ def fix_rad_range( rad ):
 class CalibratorNode( object ):
     """ The CalibrationNode class is running the ros node and collects all the necessary data. the data is stored in self.keyframes and passed on to self.optimizer. """
     def __init__( self ):
-        rospy.init_node( 'sensor_calibrator', anonymous=False )
+        rospy.init_node( 'lidar_calibrator', anonymous=False )
         print( 'sys.argv={}'.format(sys.argv)  )
         #self.odom_list = [ 'odom', 'sensor_odom' ]
+        self.base_frame = rospy.get_param('base_frame', 'base_link')
+        self.update_robot_config = rospy.get_param('~update_robot_config', False)
+        robot_config_file = rospy.get_param('~robot_config_file', '')
+        self.robot_config = RobotConfig(robot_config_file)
         self.odom_list = [ 'odometry/base_raw', 'odom_front_scan', 'odom_back_scan' ] # overwritten by self.apply_params!
-        self.republisher = Republisher( ['/scanner_front/scan', '/scanner_back/scan'] ) #order must match self.odom_list, ignoring the reference odometry
+        self.original_tf = self.get_original_tf() # initial guess: x1, y1, theta1, x2, y2, theta2 (two sensors)
+        self.initial_guess =(0,0,0,0,0,0)#self.get_original_tf()
         self.odom_latest = dict()
         self.keyframes = dict()
         self.init_done = False
-        self.optimizer = Optimizer()
-        self.num_opt_iterations = 2 # number of optimization runs with weighted datapoints
-        self.num_opt_step_size = 16 # we start the optimization first when we reach this many keyframes and re-run optimization for every multiple of this
-        self.max_opt_keyframes = 64 # we stop collecting keyframes / optimization whe we have more than this many keyframes
-        self.initial_guess = (0., 0., 0., 0., 0., 0.) # initial guess: x1, y1, theta1, x2, y2, theta2 (two sensors)
+        self.num_opt_iterations = rospy.get_param('~num_opt_iterations', 4) # number of optimization runs with weighted datapoints
+        self.num_opt_step_size = rospy.get_param('~num_opt_step_size', 20) # we start the optimization first when we reach this many keyframes and re-run optimization for every multiple of this
+        self.max_opt_keyframes = rospy.get_param('~max_opt_keyframes', 120) # we stop collecting keyframes / optimization whe we have more than this many keyframes
         self.save_data = None
         self.save_at = 200
         self.ref_odom = None # set by self.apply_params
         self.subscribers = []
-        self.odom_topics = []
         self.apply_params()
         self.read_args()
+
+        self.republisher = Republisher( ['/scanner_front/scan', '/scanner_back/scan'] ) #order must match self.odom_list, ignoring the reference odometry
+
         self.subscribe()
         print( 'CalibratorNode running' )
-    
+
+
+    def get_original_tf( self ):
+        print('Getting initial guess from original scans')
+        front_laser_frame_id = rospy.wait_for_message('/scanner_front/scan', LaserScan).header.frame_id
+        back_laser_frame_id = rospy.wait_for_message('/scanner_back/scan', LaserScan).header.frame_id
+        print(front_laser_frame_id, back_laser_frame_id)
+
+        tf_listener = tf.TransformListener(cache_time=rospy.Duration(10))
+
+        got_front_tf = False
+        got_back_tf = False
+
+        got_config = False
+        while not rospy.is_shutdown() and not got_config:
+
+            if not got_front_tf and front_laser_frame_id is not None:
+                print("got front frame id of ", front_laser_frame_id)
+                now=rospy.Time(0)
+                try:
+                    tf_listener.waitForTransform(self.base_frame, front_laser_frame_id, rospy.Time.now(), rospy.Duration(10.0))
+                    (trans,rot) = tf_listener.lookupTransform(self.base_frame, front_laser_frame_id, rospy.Time.now())
+                    front_x, front_y, front_z = trans
+                    print(euler_from_quaternion(rot))
+                    front_roll, front_pitch, front_yaw = euler_from_quaternion(rot)
+                    got_front_tf = True
+                except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException, tf2_ros.TransformException):
+                    continue
+
+            if not got_back_tf and back_laser_frame_id is not None:
+                print("got back frame id of ", back_laser_frame_id)
+                now=rospy.Time(0)
+                try:
+                    tf_listener.waitForTransform(self.base_frame, back_laser_frame_id, rospy.Time.now(), rospy.Duration(10.0))
+                    (trans,rot) = tf_listener.lookupTransform(self.base_frame, back_laser_frame_id, rospy.Time.now())
+                    back_x, back_y, back_z = trans
+                    back_roll, back_pitch, back_yaw = euler_from_quaternion(rot)
+                    got_back_tf = True
+                except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException, tf2_ros.TransformException):
+                    continue
+
+            if got_front_tf and got_back_tf:
+                got_config = True
+        print('Got initial guess from original scans (front - back): ', front_x, front_y, front_yaw, back_x, back_y, back_yaw )
+
+        return (front_x, front_y, front_yaw, back_x, back_y, back_yaw)
+
+
     def subscribe( self ):
         """ subscribes to the relevant ros topics """
         self.subscribers.append( rospy.Subscriber( self.ref_odom, Odometry, partial(self.odom_callback, self.ref_odom) ) )
@@ -80,7 +136,8 @@ class CalibratorNode( object ):
             self.odom_latest[topic] = None
             self.keyframes[topic] = []
             self.subscribers.append( rospy.Subscriber( topic, Odometry, partial(self.odom_callback, topic) ) )
-    
+
+
     def apply_params( self ):
         """ reads parameters and applies them immediately. unlike self.read_args, this method focuses on ros parameters and not command line parameters. """
         #if not rospy.has_param( '~odom_topics' ):
@@ -151,28 +208,41 @@ class CalibratorNode( object ):
             for sub in self.subscribers:
                 sub.unregister()
             self.subscribers = []
-            print( 'calibartion finished, continueing to re-publish scans and tf' )
     
     def optimize( self ):
         """ starts the optimization process. we first run the optimization process, then computes individual weights,
         and runs the optimization process again. """
         data = self.create_data()
-        
+
         # initial optimization run
         initial_guess = self.initial_guess
         opt = Optimizer()
         result = opt.optimize( data, initial_guess, self.odom_list )
-        
+
         # optimization loop with weighted datapoints
         for i in range(self.num_opt_iterations):
-            self.initial_guess = result.x
+            initial_guess = result.x
             opt.compute_weights( data, result.x )
             result = opt.optimize( data, initial_guess, self.odom_list )
         self.initial_guess = result.x
-        self.republisher.update_tf( result.x )
-        #print( result )
+        self.republisher.update_tf( [ self.original_tf[0], self.original_tf[1], result.x[2], self.original_tf[3], self.original_tf[4], result.x[5] ] )
+
+        print("Calibrated angles: ", result.x[2], result.x[5] - pi )
+
+        if self.update_robot_config:
+            print("UPDATING CONFIG---------------------")
+            print("data types: ", type(float(result.x[2])), type(float(result.x[5] - pi)))
+            self.robot_config.update_entry('lidar_front', ['yaw'], [float(result.x[2])])
+            self.robot_config.update_entry('lidar_back', ['yaw'], [float(result.x[5] - pi)])
+            self.robot_config.save_file()
+
+        if len(data[self.odom_list[0]]) >= self.max_opt_keyframes -1:
+            print( 'Calibration finished.' )
+            self.signal_shutdown()
+
         return result
-    
+
+
     def create_data( self ):
         """ creates the data that we use for the optimization process. we collect the delta movement between keyframes and return it.
         the returned object is a dictionary with the odom topic names as keys. each topic has a list attached, that contains (dx,dy,dtheta)
@@ -225,6 +295,12 @@ class CalibratorNode( object ):
         with open(filename, 'w') as file_handle:
             data = pickle.load( file_handle )
         return data
+
+    def signal_shutdown(self):
+        self.republisher.front_sub.unregister()
+        self.republisher.back_sub.unregister()
+        rospy.signal_shutdown("Finished!")
+
 
 
 if __name__ == '__main__':
