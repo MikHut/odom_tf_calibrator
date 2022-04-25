@@ -62,7 +62,7 @@ class CalibratorNode( object ):
         self.robot_config = RobotConfig(robot_config_file)
         self.odom_list = [ 'odometry/base_raw', 'odom_front_scan', 'odom_back_scan' ] # overwritten by self.apply_params!
         self.original_tf = self.get_original_tf() # initial guess: x1, y1, theta1, x2, y2, theta2 (two sensors)
-        self.initial_guess =(0,0,0,0,0,0)#self.get_original_tf()
+        self.initial_guess = self.get_original_tf()
         self.odom_latest = dict()
         self.keyframes = dict()
         self.init_done = False
